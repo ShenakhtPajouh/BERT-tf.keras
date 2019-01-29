@@ -172,6 +172,56 @@ def reshape_to_matrix(input_tensor):
     output_tensor = tf.reshape(input_tensor, [-1, width])
     return output_tensor
 
+class LayerNormalization(tf.keras.layers.Layer):
+
+    def build(self, input_shape):
+        self.beta = self.add_weight(name="beta", shape=input_shape[-1:], initializer=init_ops.zeros_initializer())
+        self.gamma = self.add_weight(name="gamma", shape=input_shape[-1:], initializer=init_ops.ones_initializer())
+        super().build(input_shape)
+
+    def __init__(self, trainable=True, name=None, dtype=None, **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.beta = None
+        self.gamma = None
+        self.params_shape = None
+
+
+    def call(self, inputs, activation_fn=None, begin_norm_axis=1, begin_params_axis=-1, **kwargs):
+        inputs = ops.convert_to_tensor(inputs)
+        inputs_shape = inputs.shape
+        inputs_rank = inputs_shape.ndims
+        if inputs_rank is None:
+            raise ValueError('Inputs %s has undefined rank.' % inputs.name)
+        dtype = inputs.dtype.base_dtype
+        if begin_norm_axis < 0:
+            begin_norm_axis = inputs_rank + begin_norm_axis
+        if begin_params_axis >= inputs_rank or begin_norm_axis >= inputs_rank:
+            raise ValueError('begin_params_axis (%d) and begin_norm_axis (%d) '
+                             'must be < rank(inputs) (%d)' %
+                             (begin_params_axis, begin_norm_axis, inputs_rank))
+        self.params_shape = inputs_shape[begin_params_axis:]
+        if not self.params_shape.is_fully_defined():
+            raise ValueError(
+                'Inputs %s: shape(inputs)[%s:] is not fully defined: %s' %
+                (inputs.name, begin_params_axis, inputs_shape))
+        # Calculate the moments on the last axis (layer activations).
+        norm_axes = list(range(begin_norm_axis, inputs_rank))
+        mean, variance = tf.nn.moments(inputs, norm_axes, keep_dims=True)
+        # Compute layer normalization using the batch_normalization function.
+        variance_epsilon = 1e-12
+        outputs = tf.nn.batch_normalization(
+            inputs,
+            mean,
+            variance,
+            offset=self.beta,
+            scale=self.gamma,
+            variance_epsilon=variance_epsilon)
+        outputs.set_shape(inputs_shape)
+        if activation_fn is not None:
+            outputs = activation_fn(outputs)
+        return outputs
+
+
 class AttentionLayer(tf.keras.layers.Layer):
 
     def __init__(self, num_attention_heads=1, size_per_head=512, query_act=None,
