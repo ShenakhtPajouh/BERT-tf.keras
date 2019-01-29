@@ -112,51 +112,41 @@ def get_shape_list(tensor, expected_rank=None, name=None):
     return shape
 
 
-def embedding_lookup(input_ids,
-                     vocab_size,
-                     embedding_size=128,
-                     initializer_range=0.02,
-                     word_embedding_name="word_embeddings",
-                     use_one_hot_embeddings=False):
-    """Looks up words embeddings for id tensor.
-    Args:
-      input_ids: int32 Tensor of shape [batch_size, seq_length] containing word
-        ids.
-      vocab_size: int. Size of the embedding vocabulary.
-      embedding_size: int. Width of the word embeddings.
-      initializer_range: float. Embedding initialization range.
-      word_embedding_name: string. Name of the embedding table.
-      use_one_hot_embeddings: bool. If True, use one-hot method for word
-        embeddings. If False, use `tf.nn.embedding_lookup()`. One hot is better
-        for TPUs.
-    Returns:
-      float Tensor of shape [batch_size, seq_length, embedding_size].
-    """
-    # This function assumes that the input is of shape [batch_size, seq_length,
-    # num_inputs].
-    #
-    # If the input is a 2D tensor of shape [batch_size, seq_length], we
-    # reshape to [batch_size, seq_length, 1].
-    if input_ids.shape.ndims == 2:
-        input_ids = tf.expand_dims(input_ids, axis=[-1])
+class EmbeddingLookup(tf.keras.layers.Layer):
 
-    embedding_table = tf.get_variable(
-        name=word_embedding_name,
-        shape=[vocab_size, embedding_size],
-        initializer=create_initializer(initializer_range))
+    def build(self, input_shape):
+        super().build(input_shape)
+        self.embedding_table = self.add_weight(name=self.word_embedding_name,
+                                               shape=[self.vocab_size, self.embedding_size],
+                                               initializer=self.initializer_range)
 
-    if use_one_hot_embeddings:
-        flat_input_ids = tf.reshape(input_ids, [-1])
-        one_hot_input_ids = tf.one_hot(flat_input_ids, depth=vocab_size)
-        output = tf.matmul(one_hot_input_ids, embedding_table)
-    else:
-        output = tf.nn.embedding_lookup(embedding_table, input_ids)
+    def __init__(self, vocab_size, embedding_size=128, word_embedding_name="word_embeddings", initializer_range=0.02,
+                 trainable=True, name=None, dtype=None,
+                 **kwargs):
+        super().__init__(trainable, name, dtype, **kwargs)
+        self.embedding_table = None
+        self.word_embedding_name = word_embedding_name
+        self.vocab_size = vocab_size
+        self.embedding_size = embedding_size
+        self.get_initializer_range = initializer_range
+        tf.get_variable(
+            name=word_embedding_name,
+            shape=[vocab_size, embedding_size],
+            initializer=create_initializer(initializer_range))
 
-    input_shape = get_shape_list(input_ids)
-
-    output = tf.reshape(output,
-                        input_shape[0:-1] + [input_shape[-1] * embedding_size])
-    return output, embedding_table
+    def call(self, inputs, use_one_hot_embeddings=False, **kwargs):
+        if inputs.shape.ndims == 2:
+            input_ids = tf.expand_dims(inputs, axis=[-1])
+        if use_one_hot_embeddings:
+            flat_input_ids = tf.reshape(inputs, [-1])
+            one_hot_input_ids = tf.one_hot(flat_input_ids, depth=self.vocab_size)
+            output = tf.matmul(one_hot_input_ids, self.embedding_table)
+        else:
+            output = tf.nn.embedding_lookup(self.embedding_table, inputs)
+        input_shape = get_shape_list(inputs)
+        output = tf.reshape(output,
+                            input_shape[0:-1] + [input_shape[-1] * self.embedding_size])
+        return output, self.embedding_table
 
 
 def reshape_to_matrix(input_tensor):
