@@ -221,6 +221,121 @@ class LayerNormalization(tf.keras.layers.Layer):
             outputs = activation_fn(outputs)
         return outputs
 
+class TransformerModel(tf.keras.layers.Layer):
+
+    def __init__(self, num_attention_heads=12, num_hidden_layers=12, hidden_size=768, initializer_range=0.02,
+                 attention_probs_dropout_prob=0.1, hidden_dropout_prob=None, intermediate_act_fn=gelu,
+                 intermediate_size=3072, attention_mask=None, trainable=True, name=None, dtype=None, **kwargs):
+        super().__init__(trainable, name, dtype, **kwargs)
+        self.hidden_size = hidden_size
+        self.num_hidden_size = num_hidden_layers
+        self.hidden_dropout_prob = hidden_dropout_prob
+        if hidden_size % num_attention_heads != 0:
+            raise ValueError(
+                "The hidden size (%d) is not a multiple of the number of attention "
+                "heads (%d)" % (hidden_size, num_attention_heads))
+        attention_head_size = int(hidden_size / num_attention_heads)
+        self.attention_layers = []
+        self.attention_dense_layers = []
+        self.intermediate_dense_layers = []
+        self.attention_layer_norms = []
+        self.output_dense_layers = []
+        self.output_layer_norms = []
+        for layer_idx in range(num_hidden_layers):
+            with tf.variable_scope("layer_%d" % layer_idx):
+                with tf.variable_scope("attention"):
+                    with tf.variable_scope("self"):
+                        attention_head = AttentionLayer(num_attention_heads=num_attention_heads,
+                                                        size_per_head=attention_head_size,
+                                                        initializer_range=initializer_range,
+                                                        attention_probs_dropout_prob=attention_probs_dropout_prob)
+                        self.attention_layers.append(attention_head)
+                    with tf.variable_scope("output"):
+                        dense_layer = tf.keras.layers.Dense(
+                            hidden_size,
+                            kernel_initializer=create_initializer(initializer_range))
+                        self.attention_dense_layers.append(dense_layer)
+                        norm_layer = LayerNormalization()
+                        self.attention_layer_norms.append(norm_layer)
+                with tf.variable_scope("intermediate"):
+                    intermediate_dense = tf.keras.layers.Dense(
+                        intermediate_size,
+                        activation=intermediate_act_fn,
+                        kernel_initializer=create_initializer(initializer_range))
+                    self.intermediate_dense_layers.append(intermediate_dense)
+
+                with tf.variable_scope("output"):
+                    output_dense_layer = tf.keras.layers.Dense(
+                        hidden_size,
+                        kernel_initializer=create_initializer(initializer_range))
+                    self.output_dense_layers.append(output_dense_layer)
+
+    def call(self, inputs, attention_mask=None, attention_probs_dropout_prob=0.1, hidden_dropout_prob=0.1,
+             do_return_all_layers=False, **kwargs):
+        if hidden_dropout_prob is None:
+            hidden_dropout_prob = self.hidden_dropout_prob
+        input_shape = get_shape_list(inputs, expected_rank=3)
+        batch_size = input_shape[0]
+        seq_length = input_shape[1]
+        input_width = input_shape[2]
+        # The Transformer performs sum residuals on all layers so the input needs
+        # to be the same as the hidden size.
+        if input_width != self.hidden_size:
+            raise ValueError("The width of the input tensor (%d) != hidden size (%d)" %
+                             (input_width, self.hidden_size))
+        # The Transformer performs sum residuals on all layers so the input needs
+        # to be the same as the hidden size.
+        if input_width != self.hidden_size:
+            raise ValueError("The width of the input tensor (%d) != hidden size (%d)" %
+                             (input_width, self.hidden_size))
+        # We keep the representation as a 2D tensor to avoid re-shaping it back and
+        # forth from a 3D tensor to a 2D tensor. Re-shapes are normally free on
+        # the GPU/CPU but may not be free on the TPU, so we want to minimize them to
+        # help the optimizer.
+        prev_output = reshape_to_matrix(inputs)
+
+        all_layer_outputs = []
+        for i in range(self.num_hidden_size):
+            layer_input = prev_output
+            attention_heads = []
+            attention_head = self.attention_layers[i]((layer_input, layer_input),
+                                                      batch_size=batch_size,
+                                                      from_seq_length=seq_length,
+                                                      to_seq_length=seq_length,
+                                                      do_return_2d_tensor=True,
+                                                      attention_mask=attention_mask,
+                                                      attention_probs_dropout_prob=attention_probs_dropout_prob)
+            attention_heads.append(attention_head)
+            attention_output = None
+            if len(attention_heads) == 1:
+                attention_output = attention_heads[0]
+            else:
+                # In the case where we have other sequences, we just concatenate
+                # them to the self-attention head before the projection.
+                attention_output = tf.concat(attention_heads, axis=-1)
+
+            # Run a linear projection of `hidden_size` then add a residual
+            # with `layer_input`.
+            attention_output = self.attention_dense_layers[i](attention_output)
+            attention_output = dropout(attention_output, self.hidden_dropout_prob)
+            attention_output = self.attention_layer_norms[i](inputs=attention_output + layer_input, begin_norm_axis=-1,
+                                                             begin_params_axis=-1)
+            intermediate_output = self.intermediate_dense_layers[i](attention_output)
+            layer_output = self.output_dense_layers[i](intermediate_output)
+            layer_output = dropout(layer_output, hidden_dropout_prob)
+            layer_output = self.output_layer_norms[i](layer_output + attention_output)
+            prev_output = layer_output
+            all_layer_outputs.append(layer_output)
+
+        if do_return_all_layers:
+            final_outputs = []
+            for layer_output in all_layer_outputs:
+                final_output = reshape_from_matrix(layer_output, input_shape)
+                final_outputs.append(final_output)
+            return final_outputs
+        else:
+            final_output = reshape_from_matrix(prev_output, input_shape)
+            return final_output
 
 class AttentionLayer(tf.keras.layers.Layer):
 
