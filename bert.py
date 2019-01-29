@@ -148,6 +148,91 @@ class EmbeddingLookup(tf.keras.layers.Layer):
                             input_shape[0:-1] + [input_shape[-1] * self.embedding_size])
         return output, self.embedding_table
 
+class EmbeddingPostprocessor(tf.keras.layers.Layer):
+
+    def __init__(self, initializer_range=0.02, token_type_vocab_size=16,
+                 token_type_embedding_name="token_type_embeddings", position_embedding_name="position_embeddings",
+                 max_position_embeddings=512, use_token_type=False, use_position_embeddings=True, dropout_prob=0.1,
+                 trainable=True,
+                 name=None, dtype=None, **kwargs):
+        super().__init__(trainable, name, dtype, **kwargs)
+        self.token_type_table = None
+        self.full_position_embeddings = None
+        self.dropout_prob = dropout_prob
+        self.use_token_type = use_token_type
+        self.use_position_embedding = use_position_embeddings
+        self.max_position_embedding = max_position_embeddings
+        self.token_type_embedding_name = token_type_embedding_name
+        self.position_embedding_name = position_embedding_name
+        self.token_type_vocab_size = token_type_vocab_size
+        self.initializer_range = initializer_range
+        self.layer_norm = LayerNormalization(trainable, name, dtype)
+
+    def build(self, input_shape):
+        super().build(input_shape)
+        if self.use_token_type:
+            self.token_type_table = self.add_weight(name=self.token_type_embedding_name,
+                                                    shape=[self.token_type_vocab_size, input_shape[2]],
+                                                    initializer=create_initializer(self.initializer_range))
+        if self.use_position_embedding:
+            assert_op = tf.assert_less_equal(input_shape[1], self.max_position_embeddings)
+            with tf.control_dependencies([assert_op]):
+                self.full_position_embeddings = self.add_weight(name=self.position_embedding_name,
+                                                                shape=[self.max_position_embedding, input_shape[2]],
+                                                                initializer=create_initializer(self.initializer_range))
+
+    def call(self, inputs, token_type_ids=None,
+             max_position_embeddings=512, dropout_prob=None, **kwargs):
+        input_shape = get_shape_list(inputs, expected_rank=3)
+        batch_size = input_shape[0]
+        seq_length = input_shape[1]
+        width = input_shape[2]
+
+        output = inputs
+
+        if self.use_token_type:
+            if token_type_ids is None:
+                raise ValueError("`token_type_ids` must be specified if"
+                                 "`use_token_type` is True.")
+            # This vocab will be small so we always do one-hot here, since it is always
+            # faster for a small vocabulary.
+            flat_token_type_ids = tf.reshape(token_type_ids, [-1])
+            one_hot_ids = tf.one_hot(flat_token_type_ids, depth=self.token_type_vocab_size)
+            token_type_embeddings = tf.matmul(one_hot_ids, self.token_type_table)
+            token_type_embeddings = tf.reshape(token_type_embeddings,
+                                               [batch_size, seq_length, width])
+            output += token_type_embeddings
+
+        if self.use_position_embeddings:
+            # Since the position embedding table is a learned variable, we create it
+            # using a (long) sequence length `max_position_embeddings`. The actual
+            # sequence length might be shorter than this, for faster training of
+            # tasks that do not have long sequences.
+            #
+            # So `full_position_embeddings` is effectively an embedding table
+            # for position [0, 1, 2, ..., max_position_embeddings-1], and the current
+            # sequence has positions [0, 1, 2, ... seq_length-1], so we can just
+            # perform a slice.
+            position_embeddings = tf.slice(self.full_position_embeddings, [0, 0],
+                                           [seq_length, -1])
+            num_dims = len(output.shape.as_list())
+
+            # Only the last two dimensions are relevant (`seq_length` and `width`), so
+            # we broadcast among the first dimensions, which is typically just
+            # the batch size.
+            position_broadcast_shape = []
+            for _ in range(num_dims - 2):
+                position_broadcast_shape.append(1)
+            position_broadcast_shape.extend([seq_length, width])
+            position_embeddings = tf.reshape(position_embeddings,
+                                             position_broadcast_shape)
+            output += position_embeddings
+
+        output = self.layer_norm(output)
+        if dropout_prob is None:
+            dropout_prob = self.dropout_prob
+        output = dropout(output, dropout_prob)
+        return output
 
 def reshape_to_matrix(input_tensor):
     """Reshapes a >= rank 2 tensor to a rank 2 tensor (i.e., a matrix)."""
