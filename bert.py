@@ -194,7 +194,7 @@ class AttentionLayer(tf.keras.layers.Layer):
             neme="key",
             kernel_initializer=create_initializer(initializer_range)
         )
-        self.dropout = tf.keras.layers.Dropout(attention_probs_dropout_prob)
+        self.attention_probs_dropout_prob = attention_probs_dropout_prob
         # `value_layer` = [B*T, N*H]
         self.value_layer = tf.keras.layers.Dense(
             num_attention_heads * size_per_head,
@@ -206,10 +206,10 @@ class AttentionLayer(tf.keras.layers.Layer):
 
 
 
-    def __call__(self, inputs, attention_probs_dropout_prob=0.0, attention_mask = None, do_return_2d_tensor=False,
+    def call(self, inputs, attention_probs_dropout_prob=0.0, attention_mask = None, do_return_2d_tensor=False,
                  batch_size=None,
                  from_seq_length=None,
-                 to_seq_length=None, *args, **kwargs):
+                 to_seq_length=None, training = False, *args, **kwargs):
         def transpose_for_scores(input_tensor, batch_size, num_attention_heads,
                                  seq_length, width):
             output_tensor = tf.reshape(
@@ -282,7 +282,8 @@ class AttentionLayer(tf.keras.layers.Layer):
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
-        attention_probs = self.dropout(attention_probs)
+        if training:
+            attention_probs = dropout(attention_probs, attention_probs_dropout_prob)
 
         # `value_layer` = [B, T, N, H]
         value_layer = tf.reshape(
@@ -310,6 +311,7 @@ class AttentionLayer(tf.keras.layers.Layer):
                 [batch_size, from_seq_length, self.num_attention_heads * self.size_per_head])
 
         return context_layer
+
 	
 def create_initializer(initializer_range=0.02):
     """Creates a `truncated_normal_initializer` with the given range."""
