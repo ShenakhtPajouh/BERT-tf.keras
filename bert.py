@@ -91,7 +91,6 @@ class LayerNormalization(tf.keras.layers.Layer):
         super().__init__(trainable=trainable, name=name, dtype=dtype, **kwargs)
         self.beta = None
         self.gamma = None
-        self.params_shape = None
 
     def call(self, inputs, activation_fn=None, begin_norm_axis=1, begin_params_axis=-1, **kwargs):
         inputs = ops.convert_to_tensor(inputs)
@@ -105,8 +104,8 @@ class LayerNormalization(tf.keras.layers.Layer):
             raise ValueError('begin_params_axis (%d) and begin_norm_axis (%d) '
                              'must be < rank(inputs) (%d)' %
                              (begin_params_axis, begin_norm_axis, inputs_rank))
-        self.params_shape = inputs_shape[begin_params_axis:]
-        if not self.params_shape.is_fully_defined():
+        params_shape = inputs_shape[begin_params_axis:]
+        if not params_shape.is_fully_defined():
             raise ValueError(
                 'Inputs %s: shape(inputs)[%s:] is not fully defined: %s' %
                 (inputs.name, begin_params_axis, inputs_shape))
@@ -126,6 +125,10 @@ class LayerNormalization(tf.keras.layers.Layer):
         if activation_fn is not None:
             outputs = activation_fn(outputs)
         return outputs
+
+    def __call__(self, inputs, activation_fn=None, begin_norm_axis=1, begin_params_axis=-1, **kwargs):
+        return super().__call__(inputs=inputs, activation_fn=activation_fn, begin_norm_axis=begin_norm_axis,
+                                begin_params_axis=begin_params_axis, **kwargs)
 
 
 class AttentionLayer(tf.keras.layers.Layer):
@@ -163,7 +166,7 @@ class AttentionLayer(tf.keras.layers.Layer):
     def call(self, inputs, attention_probs_dropout_prob=0.0, attention_mask=None, do_return_2d_tensor=False,
              batch_size=None,
              from_seq_length=None,
-             to_seq_length=None, training=False, *args, **kwargs):
+             to_seq_length=None, training=False, **kwargs):
         def transpose_for_scores(input_tensor, batch_size, num_attention_heads,
                                  seq_length, width):
             output_tensor = tf.reshape(
@@ -266,6 +269,18 @@ class AttentionLayer(tf.keras.layers.Layer):
 
         return context_layer
 
+    def __call__(self, inputs, attention_probs_dropout_prob=0.0, attention_mask=None,
+                 do_return_2d_tensor=False,
+                 batch_size=None,
+                 from_seq_length=None,
+                 to_seq_length=None, training=False, **kwargs):
+        return super().__call__(inputs, attention_probs_dropout_prob=attention_probs_dropout_prob,
+                                attention_mask=attention_mask,
+                                do_return_2d_tensor=do_return_2d_tensor,
+                                batch_size=batch_size,
+                                from_seq_length=from_seq_length,
+                                to_seq_length=to_seq_length, training=training, **kwargs)
+
 
 def gelu(input_tensor):
     """Gaussian Error Linear Unit.
@@ -302,33 +317,31 @@ class TransformerModel(tf.keras.layers.Layer):
         self.output_dense_layers = []
         self.output_layer_norms = []
         for layer_idx in range(num_hidden_layers):
-            with tf.variable_scope("layer_%d" % layer_idx):
-                with tf.variable_scope("attention"):
-                    with tf.variable_scope("self"):
-                        attention_head = AttentionLayer(num_attention_heads=num_attention_heads,
-                                                        size_per_head=attention_head_size,
-                                                        initializer_range=initializer_range,
-                                                        attention_probs_dropout_prob=attention_probs_dropout_prob)
-                        self.attention_layers.append(attention_head)
-                    with tf.variable_scope("output"):
-                        dense_layer = tf.keras.layers.Dense(
-                            hidden_size,
-                            kernel_initializer=create_initializer(initializer_range))
-                        self.attention_dense_layers.append(dense_layer)
-                        norm_layer = LayerNormalization()
-                        self.attention_layer_norms.append(norm_layer)
-                with tf.variable_scope("intermediate"):
-                    intermediate_dense = tf.keras.layers.Dense(
-                        intermediate_size,
-                        activation=intermediate_act_fn,
-                        kernel_initializer=create_initializer(initializer_range))
-                    self.intermediate_dense_layers.append(intermediate_dense)
-
-                with tf.variable_scope("output"):
-                    output_dense_layer = tf.keras.layers.Dense(
-                        hidden_size,
-                        kernel_initializer=create_initializer(initializer_range))
-                    self.output_dense_layers.append(output_dense_layer)
+            attention_head = AttentionLayer(num_attention_heads=num_attention_heads,
+                                            size_per_head=attention_head_size,
+                                            initializer_range=initializer_range,
+                                            attention_probs_dropout_prob=attention_probs_dropout_prob,
+                                            name=("layer_%d" % layer_idx) + "/attention/self")
+            self.attention_layers.append(attention_head)
+            dense_layer = tf.keras.layers.Dense(
+                hidden_size,
+                kernel_initializer=create_initializer(initializer_range),
+                name=("layer_%d" % layer_idx) + "/attention/output/Dense")
+            self.attention_dense_layers.append(dense_layer)
+            norm_layer = LayerNormalization(name=("layer_%d" % layer_idx) + "/attention/output/LayerNorm")
+            self.attention_layer_norms.append(norm_layer)
+            intermediate_dense = tf.keras.layers.Dense(
+                intermediate_size,
+                activation=intermediate_act_fn,
+                kernel_initializer=create_initializer(initializer_range),
+                name=("layer_%d" % layer_idx) + "/intermediate/Dense")
+            self.intermediate_dense_layers.append(intermediate_dense)
+            output_dense_layer = tf.keras.layers.Dense(
+                hidden_size,
+                kernel_initializer=create_initializer(initializer_range),
+                name=("layer_%d" % layer_idx) + "/output/Dense")
+            self.output_dense_layers.append(output_dense_layer)
+            norm_layer = LayerNormalization(name=("layer_%d" % layer_idx) + "/output/LayerNorm")
 
     def call(self, inputs, attention_mask=None, attention_probs_dropout_prob=None, hidden_dropout_prob=None,
              do_return_all_layers=False, **kwargs):
@@ -399,6 +412,13 @@ class TransformerModel(tf.keras.layers.Layer):
             final_output = reshape_from_matrix(prev_output, input_shape)
             return final_output
 
+    def __call__(self, inputs, attention_mask=None, attention_probs_dropout_prob=None, hidden_dropout_prob=None,
+                 do_return_all_layers=False, **kwargs):
+        return super().__call__(inputs=inputs, attention_mask=attention_mask,
+                                attention_probs_dropout_prob=attention_probs_dropout_prob,
+                                hidden_dropout_prob=hidden_dropout_prob, do_return_all_layers=do_return_all_layers,
+                                **kwargs)
+
 
 class EmbeddingLookup(tf.keras.layers.Layer):
 
@@ -432,6 +452,9 @@ class EmbeddingLookup(tf.keras.layers.Layer):
                             input_shape[0:-1] + [input_shape[-1] * self.embedding_size])
         return output, self.embedding_table
 
+    def __call__(self, inputs, use_one_hot_embeddings=False, **kwargs):
+        return super().__call__(inputs=inputs, use_one_hot_embeddings=use_one_hot_embeddings, **kwargs)
+
 
 class EmbeddingPostprocessor(tf.keras.layers.Layer):
 
@@ -451,7 +474,7 @@ class EmbeddingPostprocessor(tf.keras.layers.Layer):
         self.position_embedding_name = position_embedding_name
         self.token_type_vocab_size = token_type_vocab_size
         self.initializer_range = initializer_range
-        self.layer_norm = LayerNormalization(trainable, name, dtype)
+        self.layer_norm = LayerNormalization()
 
     def build(self, input_shape):
         super().build(input_shape)
@@ -513,11 +536,15 @@ class EmbeddingPostprocessor(tf.keras.layers.Layer):
                                              position_broadcast_shape)
             output += position_embeddings
 
-        output = self.layer_norm(output)
+        output = self.layer_norm(output, begin_norm_axis=-1, begin_params_axis=-1)
         if dropout_prob is None:
             dropout_prob = self.dropout_prob
         output = dropout(output, dropout_prob)
         return output
+
+    def __call__(self, inputs, token_type_ids=None,
+                 dropout_prob=None, **kwargs):
+        return super().__call__(inputs=inputs, token_type_ids=token_type_ids, dropout_prob=dropout_prob, **kwargs)
 
 
 class BertModel(tf.keras.models.Model):
@@ -529,39 +556,39 @@ class BertModel(tf.keras.models.Model):
         if not is_training:
             config.hidden_dropout_prob = 0.0
             config.attention_probs_dropout_prob = 0.0
-        with tf.variable_scope(scope, default_name="bert"):
-            with tf.variable_scope("embeddings"):
-                # Perform embedding lookup on the word ids.
-                self.embedding_lookup = EmbeddingLookup(
-                    vocab_size=config.vocab_size,
-                    embedding_size=config.hidden_size,
-                    initializer_range=config.initializer_range,
-                    word_embedding_name="word_embeddings")
-                self.embedding_postprocessor = EmbeddingPostprocessor(use_token_type=True,
-                                                                      token_type_vocab_size=config.type_vocab_size,
-                                                                      token_type_embedding_name="token_type_embeddings",
-                                                                      use_position_embeddings=True,
-                                                                      position_embedding_name="position_embeddings",
-                                                                      initializer_range=config.initializer_range,
-                                                                      max_position_embeddings=config.max_position_embeddings,
-                                                                      dropout_prob=config.hidden_dropout_prob)
-            with tf.variable_scope("encoder"):
-                self.transformer = TransformerModel(hidden_size=config.hidden_size,
-                                                    num_hidden_layers=config.num_hidden_layers,
-                                                    num_attention_heads=config.num_attention_heads,
-                                                    intermediate_size=config.intermediate_size,
-                                                    intermediate_act_fn=get_activation(config.hidden_act),
-                                                    hidden_dropout_prob=config.hidden_dropout_prob,
-                                                    attention_probs_dropout_prob=config.attention_probs_dropout_prob,
-                                                    initializer_range=config.initializer_range)
+        # Perform embedding lookup on the word ids.
+        self.embedding_lookup = EmbeddingLookup(
+            vocab_size=config.vocab_size,
+            embedding_size=config.hidden_size,
+            initializer_range=config.initializer_range,
+            word_embedding_name="word_embeddings",
+            name="bert/embeddings")
+        self.embedding_postprocessor = EmbeddingPostprocessor(use_token_type=True,
+                                                              token_type_vocab_size=config.type_vocab_size,
+                                                              token_type_embedding_name="token_type_embeddings",
+                                                              use_position_embeddings=True,
+                                                              position_embedding_name="position_embeddings",
+                                                              initializer_range=config.initializer_range,
+                                                              max_position_embeddings=config.max_position_embeddings,
+                                                              dropout_prob=config.hidden_dropout_prob,
+                                                              name="bert/embeddings")
+        self.transformer = TransformerModel(hidden_size=config.hidden_size,
+                                            num_hidden_layers=config.num_hidden_layers,
+                                            num_attention_heads=config.num_attention_heads,
+                                            intermediate_size=config.intermediate_size,
+                                            intermediate_act_fn=get_activation(config.hidden_act),
+                                            hidden_dropout_prob=config.hidden_dropout_prob,
+                                            attention_probs_dropout_prob=config.attention_probs_dropout_prob,
+                                            initializer_range=config.initializer_range,
+                                            name="bert/encoder")
 
-            with tf.variable_scope("pooler"):
-                # We "pool" the model by simply taking the hidden state corresponding
-                # to the first token. We assume that this has been pre-trained
-                self.dense_pooler = tf.keras.layers.Dense(
-                    config.hidden_size,
-                    activation=tf.tanh,
-                    kernel_initializer=create_initializer(config.initializer_range))
+        # We "pool" the model by simply taking the hidden state corresponding
+        # to the first token. We assume that this has been pre-trained
+        self.dense_pooler = tf.keras.layers.Dense(
+            config.hidden_size,
+            activation=tf.tanh,
+            kernel_initializer=create_initializer(config.initializer_range),
+            name="bert/pooler/Dense")
 
     def call(self, inputs, input_mask=None, token_type_ids=None, use_one_hot_embeddings=True, hidden_dropout_prob=None,
              attention_probs_dropout_prob=None, pooled=False):
