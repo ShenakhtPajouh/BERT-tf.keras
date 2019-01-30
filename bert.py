@@ -296,6 +296,83 @@ class LayerNormalization(tf.keras.layers.Layer):
             outputs = activation_fn(outputs)
         return outputs
 
+class BertModel(tf.keras.models.Model):
+
+    def __init__(self, config, is_training, scope=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.config = config
+        config = copy.deepcopy(config)
+        if not is_training:
+            config.hidden_dropout_prob = 0.0
+            config.attention_probs_dropout_prob = 0.0
+        with tf.variable_scope(scope, default_name="bert"):
+            with tf.variable_scope("embeddings"):
+                # Perform embedding lookup on the word ids.
+                self.embedding_lookup = EmbeddingLookup(
+                    vocab_size=config.vocab_size,
+                    embedding_size=config.hidden_size,
+                    initializer_range=config.initializer_range,
+                    word_embedding_name="word_embeddings")
+                self.embedding_postprocessor = EmbeddingPostprocessor(use_token_type=True,
+                                                                      token_type_vocab_size=config.type_vocab_size,
+                                                                      token_type_embedding_name="token_type_embeddings",
+                                                                      use_position_embeddings=True,
+                                                                      position_embedding_name="position_embeddings",
+                                                                      initializer_range=config.initializer_range,
+                                                                      max_position_embeddings=config.max_position_embeddings,
+                                                                      dropout_prob=config.hidden_dropout_prob)
+            with tf.variable_scope("encoder"):
+                self.transformer = TransformerModel(hidden_size=config.hidden_size,
+                                                    num_hidden_layers=config.num_hidden_layers,
+                                                    num_attention_heads=config.num_attention_heads,
+                                                    intermediate_size=config.intermediate_size,
+                                                    intermediate_act_fn=get_activation(config.hidden_act),
+                                                    hidden_dropout_prob=config.hidden_dropout_prob,
+                                                    attention_probs_dropout_prob=config.attention_probs_dropout_prob,
+                                                    initializer_range=config.initializer_range)
+
+            with tf.variable_scope("pooler"):
+                # We "pool" the model by simply taking the hidden state corresponding
+                # to the first token. We assume that this has been pre-trained
+                self.dense_pooler = tf.keras.layers.Dense(
+                    config.hidden_size,
+                    activation=tf.tanh,
+                    kernel_initializer=create_initializer(config.initializer_range))
+
+    def call(self, inputs, input_mask=None, token_type_ids=None, use_one_hot_embeddings=True, hidden_dropout_prob=None,
+             attention_probs_dropout_prob=None, pooled=False):
+        input_shape = get_shape_list(inputs, expected_rank=2)
+        batch_size = input_shape[0]
+        seq_length = input_shape[1]
+
+        if input_mask is None:
+            input_mask = tf.ones(shape=[batch_size, seq_length], dtype=tf.int32)
+
+        if token_type_ids is None:
+            token_type_ids = tf.zeros(shape=[batch_size, seq_length], dtype=tf.int32)
+        # Perform embedding lookup on the word ids.
+        (embedding_output, embedding_table) = self.embedding_lookup(inputs,
+                                                                    use_one_hot_embeddings=use_one_hot_embeddings)
+        # Add positional embeddings and token type embeddings, then layer
+        # normalize and perform dropout.
+        embedding_output = self.embedding_postprocessor(embedding_output, token_type_ids=token_type_ids)
+
+        attention_mask = create_attention_mask_from_input_mask(
+            inputs, input_mask)
+
+        all_encoder_layers = self.transformer(embedding_output, attention_mask=attention_mask,
+                                              attention_probs_dropout_prob=attention_probs_dropout_prob,
+                                              hidden_dropout_prob=hidden_dropout_prob,
+                                              do_return_all_layers=True)
+        sequence_output = all_encoder_layers[-1]
+        first_token_tensor = tf.squeeze(self.sequence_output[:, 0:1, :], axis=1)
+        pooled_output = self.dense_pooler(first_token_tensor)
+        if pooled:
+            return pooled_output
+        else:
+            return sequence_output
+
+
 class TransformerModel(tf.keras.layers.Layer):
 
     def __init__(self, num_attention_heads=12, num_hidden_layers=12, hidden_size=768, initializer_range=0.02,
