@@ -494,6 +494,26 @@ class EmbeddingPostprocessor(tf.keras.layers.Layer):
                                                                 dtype=tf.float32)
         super().build(input_shape)
 
+    @property
+    def variables(self):
+        return super().variables + self.layer_norm.variables
+
+    @property
+    def weights(self)
+        return super().weights + self.layer_norm.weights
+
+    @property
+    def trainable_variables(self):
+        if not self.trainable:
+            return []
+        return super().trainable_variables + self.layer_norm.trainable_variables
+
+    @property
+    def trainable_variables(self):
+        if not self.trainable:
+            return []
+        return super().trainable_weights + self.layer_norm.trainable_weights
+
     def call(self, inputs, token_type_ids=None,
              dropout_prob=None, **kwargs):
         input_shape = get_shape_list(inputs, expected_rank=3)
