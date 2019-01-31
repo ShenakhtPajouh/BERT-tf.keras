@@ -83,8 +83,10 @@ class BertConfig(object):
 class LayerNormalization(tf.keras.layers.Layer):
 
     def build(self, input_shape):
-        self.beta = self.add_weight(name="beta", shape=input_shape[-1:], initializer=init_ops.zeros_initializer(), dtype=tf.float32)
-        self.gamma = self.add_weight(name="gamma", shape=input_shape[-1:], initializer=init_ops.ones_initializer(), dtype=tf.float32)
+        self.beta = self.add_weight(name="beta", shape=input_shape[-1:], initializer=init_ops.zeros_initializer(),
+                                    dtype=tf.float32)
+        self.gamma = self.add_weight(name="gamma", shape=input_shape[-1:], initializer=init_ops.ones_initializer(),
+                                     dtype=tf.float32)
         super().build(input_shape)
 
     def __init__(self, trainable=True, name=None, dtype=None, **kwargs):
@@ -458,71 +460,32 @@ class EmbeddingLookup(tf.keras.layers.Layer):
         return super().__call__(inputs=inputs, use_one_hot_embeddings=use_one_hot_embeddings, **kwargs)
 
 
-class EmbeddingPostprocessor(tf.keras.layers.Layer):
+class EmbeddingUtils(tf.keras.layers.Layer):
 
-    def __init__(self, initializer_range=0.02, token_type_vocab_size=16,
-                 token_type_embedding_name="token_type_embeddings", position_embedding_name="position_embeddings",
-                 max_position_embeddings=512, use_token_type=False, use_position_embeddings=True, dropout_prob=0.1,
-                 trainable=True,
-                 name=None, dtype=None, **kwargs):
-        super().__init__(trainable=trainable, name=name, dtype=dtype, **kwargs)
+    def __init__(self, trainable=True, name=None, dtype=None,
+                 use_position_embeddings=True, token_type_embedding_name="token_type_embeddings",
+                 position_embedding_name="position_embeddings", use_token_type=False, max_position_embeddings=512,
+                 token_type_vocab_size=16,
+                 initializer_range=0.02,
+                 **kwargs):
+        super().__init__(trainable, name, dtype, **kwargs)
+        self.token_type_embedding_name = token_type_embedding_name
+        self.position_embedding_name = position_embedding_name
+        self.use_position_embeddings = use_position_embeddings
+        self.use_token_type = use_token_type
         self.token_type_table = None
         self.full_position_embeddings = None
         self.max_position_embeddings = max_position_embeddings
-        self.dropout_prob = dropout_prob
-        self.use_token_type = use_token_type
-        self.use_position_embeddings = use_position_embeddings
-        self.max_position_embedding = max_position_embeddings
-        self.token_type_embedding_name = token_type_embedding_name
-        self.position_embedding_name = position_embedding_name
-        self.token_type_vocab_size = token_type_vocab_size
         self.initializer_range = initializer_range
-        self.layer_norm = LayerNormalization()
+        self.token_type_vocab_size = token_type_vocab_size
 
-    def build(self, input_shape):
-        if self.use_token_type:
-            self.token_type_table = self.add_weight(name=self.token_type_embedding_name,
-                                                    shape=[self.token_type_vocab_size, input_shape[2].value],
-                                                    initializer=create_initializer(self.initializer_range),
-                                                    dtype=tf.float32)
-        if self.use_position_embeddings:
-            assert_op = tf.assert_less_equal(input_shape[1].value, self.max_position_embeddings)
-            with tf.control_dependencies([assert_op]):
-                self.full_position_embeddings = self.add_weight(name=self.position_embedding_name,
-                                                                shape=[self.max_position_embedding, input_shape[2].value],
-                                                                initializer=create_initializer(self.initializer_range),
-                                                                dtype=tf.float32)
-        super().build(input_shape)
-
-    @property
-    def variables(self):
-        return super().variables + self.layer_norm.variables
-
-    @property
-    def weights(self)
-        return super().weights + self.layer_norm.weights
-
-    @property
-    def trainable_variables(self):
-        if not self.trainable:
-            return []
-        return super().trainable_variables + self.layer_norm.trainable_variables
-
-    @property
-    def trainable_variables(self):
-        if not self.trainable:
-            return []
-        return super().trainable_weights + self.layer_norm.trainable_weights
-
-    def call(self, inputs, token_type_ids=None,
-             dropout_prob=None, **kwargs):
+    def call(self, inputs, token_type_ids=None, **kwargs):
         input_shape = get_shape_list(inputs, expected_rank=3)
         batch_size = input_shape[0]
         seq_length = input_shape[1]
         width = input_shape[2]
 
         output = inputs
-
         if self.use_token_type:
             if token_type_ids is None:
                 raise ValueError("`token_type_ids` must be specified if"
@@ -561,6 +524,51 @@ class EmbeddingPostprocessor(tf.keras.layers.Layer):
                                              position_broadcast_shape)
             output += position_embeddings
 
+        return output
+
+    def __call__(self, inputs, token_type_ids=None, **kwargs):
+        return super().__call__(inputs=inputs, token_type_ids=token_type_ids, **kwargs)
+
+    def build(self, input_shape):
+        if self.use_token_type:
+            self.token_type_table = self.add_weight(name=self.token_type_embedding_name,
+                                                    shape=[self.token_type_vocab_size, input_shape[2].value],
+                                                    initializer=create_initializer(self.initializer_range),
+                                                    dtype=tf.float32)
+        if self.use_position_embeddings:
+            assert_op = tf.assert_less_equal(input_shape[1].value, self.max_position_embeddings)
+            with tf.control_dependencies([assert_op]):
+                self.full_position_embeddings = self.add_weight(name=self.position_embedding_name,
+                                                                shape=[self.max_position_embeddings,
+                                                                       input_shape[2].value],
+                                                                initializer=create_initializer(self.initializer_range),
+                                                                dtype=tf.float32)
+        super().build(input_shape)
+
+
+class EmbeddingPostprocessor(tf.keras.layers.Layer):
+
+    def __init__(self, initializer_range=0.02, token_type_vocab_size=16,
+                 max_position_embeddings=512, dropout_prob=0.1,
+                 use_position_embeddings=True, token_type_embedding_name="token_type_embeddings",
+                 position_embedding_name="position_embeddings", use_token_type=False,
+                 trainable=True,
+                 name=None, dtype=None, **kwargs):
+        super().__init__(trainable=trainable, name=name, dtype=dtype, **kwargs)
+        self.dropout_prob = dropout_prob
+        self.embedding_utils = EmbeddingUtils(trainable=trainable, dtype=dtype,
+                                              use_position_embeddings=use_position_embeddings,
+                                              token_type_embedding_name=token_type_embedding_name,
+                                              position_embedding_name=position_embedding_name,
+                                              use_token_type=use_token_type,
+                                              max_position_embeddings=max_position_embeddings,
+                                              token_type_vocab_size=token_type_vocab_size,
+                                              initializer_range=initializer_range)
+        self.layer_norm = LayerNormalization()
+
+    def call(self, inputs, token_type_ids=None,
+             dropout_prob=None, **kwargs):
+        output = self.embedding_utils(inputs, token_type_ids=token_type_ids)
         output = self.layer_norm(output, begin_norm_axis=-1, begin_params_axis=-1)
         if dropout_prob is None:
             dropout_prob = self.dropout_prob
