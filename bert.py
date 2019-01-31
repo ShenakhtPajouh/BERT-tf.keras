@@ -83,8 +83,8 @@ class BertConfig(object):
 class LayerNormalization(tf.keras.layers.Layer):
 
     def build(self, input_shape):
-        self.beta = self.add_weight(name="beta", shape=input_shape[-1:], initializer=init_ops.zeros_initializer())
-        self.gamma = self.add_weight(name="gamma", shape=input_shape[-1:], initializer=init_ops.ones_initializer())
+        self.beta = self.add_weight(name="beta", shape=input_shape[-1:], initializer=init_ops.zeros_initializer(), dtype=tf.float32)
+        self.gamma = self.add_weight(name="gamma", shape=input_shape[-1:], initializer=init_ops.ones_initializer(), dtype=tf.float32)
         super().build(input_shape)
 
     def __init__(self, trainable=True, name=None, dtype=None, **kwargs):
@@ -150,7 +150,7 @@ class AttentionLayer(tf.keras.layers.Layer):
         self.key_layer = tf.keras.layers.Dense(
             num_attention_heads * size_per_head,
             activation=key_act,
-            neme="key",
+            name="key",
             kernel_initializer=create_initializer(initializer_range)
         )
         self.attention_probs_dropout_prob = attention_probs_dropout_prob
@@ -295,7 +295,7 @@ def gelu(input_tensor):
     return input_tensor * cdf
 
 
-class TransformerModel(tf.keras.layers.Layer):
+class TransformerModel(tf.keras.Model):
 
     def __init__(self, num_attention_heads=12, num_hidden_layers=12, hidden_size=768, initializer_range=0.02,
                  attention_probs_dropout_prob=0.1, hidden_dropout_prob=None, intermediate_act_fn=gelu,
@@ -342,6 +342,7 @@ class TransformerModel(tf.keras.layers.Layer):
                 name=("layer_%d" % layer_idx) + "/output/Dense")
             self.output_dense_layers.append(output_dense_layer)
             norm_layer = LayerNormalization(name=("layer_%d" % layer_idx) + "/output/LayerNorm")
+            self.output_layer_norms.append(norm_layer)
 
     def call(self, inputs, attention_mask=None, attention_probs_dropout_prob=None, hidden_dropout_prob=None,
              do_return_all_layers=False, **kwargs):
@@ -426,7 +427,8 @@ class EmbeddingLookup(tf.keras.layers.Layer):
         super().build(input_shape)
         self.embedding_table = self.add_weight(name=self.word_embedding_name,
                                                shape=[self.vocab_size, self.embedding_size],
-                                               initializer=self.initializer_range)
+                                               initializer=create_initializer(self.initializer_range),
+                                               dtype=tf.float32)
 
     def __init__(self, vocab_size, embedding_size=128, word_embedding_name="word_embeddings", initializer_range=0.02,
                  trainable=True, name=None, dtype=None,
@@ -436,7 +438,7 @@ class EmbeddingLookup(tf.keras.layers.Layer):
         self.word_embedding_name = word_embedding_name
         self.vocab_size = vocab_size
         self.embedding_size = embedding_size
-        self.get_initializer_range = initializer_range
+        self.initializer_range = initializer_range
 
     def call(self, inputs, use_one_hot_embeddings=False, **kwargs):
         if inputs.shape.ndims == 2:
@@ -452,7 +454,7 @@ class EmbeddingLookup(tf.keras.layers.Layer):
                             input_shape[0:-1] + [input_shape[-1] * self.embedding_size])
         return output, self.embedding_table
 
-    def __call__(self, inputs, use_one_hot_embeddings=False, **kwargs):
+    def __call__(self, inputs, use_one_hot_embeddings=False, initializer_range=0.02, **kwargs):
         return super().__call__(inputs=inputs, use_one_hot_embeddings=use_one_hot_embeddings, **kwargs)
 
 
@@ -463,12 +465,13 @@ class EmbeddingPostprocessor(tf.keras.layers.Layer):
                  max_position_embeddings=512, use_token_type=False, use_position_embeddings=True, dropout_prob=0.1,
                  trainable=True,
                  name=None, dtype=None, **kwargs):
-        super().__init__(trainable, name, dtype, **kwargs)
+        super().__init__(trainable=trainable, name=name, dtype=dtype, **kwargs)
         self.token_type_table = None
         self.full_position_embeddings = None
+        self.max_position_embeddings = max_position_embeddings
         self.dropout_prob = dropout_prob
         self.use_token_type = use_token_type
-        self.use_position_embedding = use_position_embeddings
+        self.use_position_embeddings = use_position_embeddings
         self.max_position_embedding = max_position_embeddings
         self.token_type_embedding_name = token_type_embedding_name
         self.position_embedding_name = position_embedding_name
@@ -477,17 +480,19 @@ class EmbeddingPostprocessor(tf.keras.layers.Layer):
         self.layer_norm = LayerNormalization()
 
     def build(self, input_shape):
-        super().build(input_shape)
         if self.use_token_type:
             self.token_type_table = self.add_weight(name=self.token_type_embedding_name,
-                                                    shape=[self.token_type_vocab_size, input_shape[2]],
-                                                    initializer=create_initializer(self.initializer_range))
-        if self.use_position_embedding:
-            assert_op = tf.assert_less_equal(input_shape[1], self.max_position_embeddings)
+                                                    shape=[self.token_type_vocab_size, input_shape[2].value],
+                                                    initializer=create_initializer(self.initializer_range),
+                                                    dtype=tf.float32)
+        if self.use_position_embeddings:
+            assert_op = tf.assert_less_equal(input_shape[1].value, self.max_position_embeddings)
             with tf.control_dependencies([assert_op]):
                 self.full_position_embeddings = self.add_weight(name=self.position_embedding_name,
-                                                                shape=[self.max_position_embedding, input_shape[2]],
-                                                                initializer=create_initializer(self.initializer_range))
+                                                                shape=[self.max_position_embedding, input_shape[2].value],
+                                                                initializer=create_initializer(self.initializer_range),
+                                                                dtype=tf.float32)
+        super().build(input_shape)
 
     def call(self, inputs, token_type_ids=None,
              dropout_prob=None, **kwargs):
@@ -562,7 +567,7 @@ class BertModel(tf.keras.models.Model):
             embedding_size=config.hidden_size,
             initializer_range=config.initializer_range,
             word_embedding_name="word_embeddings",
-            name="bert/embeddings")
+            name="embeddings")
         self.embedding_postprocessor = EmbeddingPostprocessor(use_token_type=True,
                                                               token_type_vocab_size=config.type_vocab_size,
                                                               token_type_embedding_name="token_type_embeddings",
@@ -571,7 +576,7 @@ class BertModel(tf.keras.models.Model):
                                                               initializer_range=config.initializer_range,
                                                               max_position_embeddings=config.max_position_embeddings,
                                                               dropout_prob=config.hidden_dropout_prob,
-                                                              name="bert/embeddings")
+                                                              name="embeddings")
         self.transformer = TransformerModel(hidden_size=config.hidden_size,
                                             num_hidden_layers=config.num_hidden_layers,
                                             num_attention_heads=config.num_attention_heads,
@@ -580,7 +585,7 @@ class BertModel(tf.keras.models.Model):
                                             hidden_dropout_prob=config.hidden_dropout_prob,
                                             attention_probs_dropout_prob=config.attention_probs_dropout_prob,
                                             initializer_range=config.initializer_range,
-                                            name="bert/encoder")
+                                            name="encoder")
 
         # We "pool" the model by simply taking the hidden state corresponding
         # to the first token. We assume that this has been pre-trained
@@ -588,10 +593,10 @@ class BertModel(tf.keras.models.Model):
             config.hidden_size,
             activation=tf.tanh,
             kernel_initializer=create_initializer(config.initializer_range),
-            name="bert/pooler/Dense")
+            name="pooler/Dense")
 
     def call(self, inputs, input_mask=None, token_type_ids=None, use_one_hot_embeddings=True, hidden_dropout_prob=None,
-             attention_probs_dropout_prob=None, pooled=False):
+             attention_probs_dropout_prob=None, pooled=False, get_all_encoder_layers=False):
         input_shape = get_shape_list(inputs, expected_rank=2)
         batch_size = input_shape[0]
         seq_length = input_shape[1]
@@ -616,12 +621,22 @@ class BertModel(tf.keras.models.Model):
                                               hidden_dropout_prob=hidden_dropout_prob,
                                               do_return_all_layers=True)
         sequence_output = all_encoder_layers[-1]
-        first_token_tensor = tf.squeeze(self.sequence_output[:, 0:1, :], axis=1)
+        first_token_tensor = tf.squeeze(sequence_output[:, 0:1, :], axis=1)
         pooled_output = self.dense_pooler(first_token_tensor)
         if pooled:
             return pooled_output
+        elif get_all_encoder_layers:
+            return all_encoder_layers
         else:
             return sequence_output
+
+    def __call__(self, inputs, input_mask=None, token_type_ids=None, use_one_hot_embeddings=True,
+                 hidden_dropout_prob=None,
+                 attention_probs_dropout_prob=None, pooled=False, get_all_encoder_layers=False, **kwargs):
+        return super().__call__(inputs=inputs, input_mask=input_mask, token_type_ids=token_type_ids,
+                                use_one_hot_embeddings=use_one_hot_embeddings, hidden_dropout_prob=hidden_dropout_prob,
+                                attention_probs_dropout_prob=attention_probs_dropout_prob, pooled=pooled,
+                                get_all_encoder_layers=get_all_encoder_layers, **kwargs)
 
 
 def get_shape_list(tensor, expected_rank=None, name=None):
