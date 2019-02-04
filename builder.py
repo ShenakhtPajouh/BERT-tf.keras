@@ -1,10 +1,9 @@
 import tensorflow as tf
+import bert
 
 
-def builder(session, config_path, ckpt_path, seq_length):
-    with open(config_path) as f:
-        conf = json.loads(f.read())
-    config = modeling.BertConfig(**conf)
+def builder(session, config_path, ckpt_path, name=None):
+    config = bert.BertConfig.from_json_file(config_path)
     graph = tf.Graph()
     with graph.as_default():
         inputs = tf.placeholder(shape=[None, None], dtype=tf.int32)
