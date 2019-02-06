@@ -2,16 +2,13 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import collections
 import copy
 import json
 import math
-import re
 import six
 import tensorflow as tf
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import init_ops
-from tensorflow.contrib.layers.python.layers import utils
 
 
 class BertConfig(object):
@@ -94,7 +91,7 @@ class LayerNormalization(tf.keras.layers.Layer):
         self.beta = None
         self.gamma = None
 
-    def call(self, inputs, activation_fn=None, begin_norm_axis=1, begin_params_axis=-1, **kwargs):
+    def call(self, inputs, activation_fn=None, begin_norm_axis=1, begin_params_axis=-1):
         inputs = ops.convert_to_tensor(inputs)
         inputs_shape = inputs.shape
         inputs_rank = inputs_shape.ndims
@@ -140,8 +137,8 @@ class AttentionLayer(tf.keras.Model):
                  attention_probs_dropout_prob=0.0, value_act=None,
                  key_act=None,
                  trainable=True,
-                 name=None, dtype=None, **kwargs):
-        super().__init__(name=name)
+                 name=None):
+        super().__init__(name=name, trainable=trainable)
         # `query_layer` = [B*F, N*H]
         self.query_layer = tf.keras.layers.Dense(
             num_attention_heads * size_per_head,
@@ -168,7 +165,7 @@ class AttentionLayer(tf.keras.Model):
     def call(self, inputs, attention_probs_dropout_prob=0.0, attention_mask=None, do_return_2d_tensor=False,
              batch_size=None,
              from_seq_length=None,
-             to_seq_length=None, training=False, **kwargs):
+             to_seq_length=None, training=False):
         def transpose_for_scores(input_tensor, batch_size, num_attention_heads,
                                  seq_length, width):
             output_tensor = tf.reshape(
@@ -301,8 +298,8 @@ class TransformerModel(tf.keras.Model):
 
     def __init__(self, num_attention_heads=12, num_hidden_layers=12, hidden_size=768, initializer_range=0.02,
                  attention_probs_dropout_prob=0.1, hidden_dropout_prob=None, intermediate_act_fn=gelu,
-                 intermediate_size=3072, trainable=True, name=None, dtype=None, **kwargs):
-        super().__init__(name=name)
+                 intermediate_size=3072, trainable=True, name=None):
+        super().__init__(name=name, trainable=trainable)
         self.hidden_size = hidden_size
         self.num_hidden_size = num_hidden_layers
         self.hidden_dropout_prob = hidden_dropout_prob
@@ -347,7 +344,7 @@ class TransformerModel(tf.keras.Model):
             self.output_layer_norms.append(norm_layer)
 
     def call(self, inputs, attention_mask=None, attention_probs_dropout_prob=None, hidden_dropout_prob=None,
-             do_return_all_layers=False, **kwargs):
+             do_return_all_layers=False):
         if hidden_dropout_prob is None:
             hidden_dropout_prob = self.hidden_dropout_prob
         if attention_probs_dropout_prob is None:
@@ -426,23 +423,22 @@ class TransformerModel(tf.keras.Model):
 class EmbeddingLookup(tf.keras.layers.Layer):
 
     def build(self, input_shape):
-        super().build(input_shape)
         self.embedding_table = self.add_weight(name=self.word_embedding_name,
                                                shape=[self.vocab_size, self.embedding_size],
                                                initializer=create_initializer(self.initializer_range),
                                                dtype=tf.float32)
+        super().build(input_shape)
 
     def __init__(self, vocab_size, embedding_size=128, word_embedding_name="word_embeddings", initializer_range=0.02,
-                 trainable=True, name=None, dtype=None,
-                 **kwargs):
-        super().__init__(name=name)
+                 trainable=True, name=None):
+        super().__init__(name=name, trainable=trainable)
         self.embedding_table = None
         self.word_embedding_name = word_embedding_name
         self.vocab_size = vocab_size
         self.embedding_size = embedding_size
         self.initializer_range = initializer_range
 
-    def call(self, inputs, use_one_hot_embeddings=False, **kwargs):
+    def call(self, inputs, use_one_hot_embeddings=False):
         if inputs.shape.ndims == 2:
             inputs = tf.expand_dims(inputs, axis=[-1])
         if use_one_hot_embeddings:
@@ -456,7 +452,7 @@ class EmbeddingLookup(tf.keras.layers.Layer):
                             input_shape[0:-1] + [input_shape[-1] * self.embedding_size])
         return output, self.embedding_table
 
-    def __call__(self, inputs, use_one_hot_embeddings=False, initializer_range=0.02, **kwargs):
+    def __call__(self, inputs, use_one_hot_embeddings=False, **kwargs):
         return super().__call__(inputs=inputs, use_one_hot_embeddings=use_one_hot_embeddings, **kwargs)
 
 
@@ -466,8 +462,8 @@ class EmbeddingPostprocessor(tf.keras.layers.Layer):
                  token_type_embedding_name="token_type_embeddings", position_embedding_name="position_embeddings",
                  max_position_embeddings=512, use_token_type=False, use_position_embeddings=True, dropout_prob=0.1,
                  trainable=True,
-                 name=None, dtype=None, **kwargs):
-        super().__init__(name=name)
+                 name=None):
+        super().__init__(name=name, trainable=trainable)
         self.token_type_table = None
         self.full_position_embeddings = None
         self.max_position_embeddings = max_position_embeddings
@@ -496,28 +492,7 @@ class EmbeddingPostprocessor(tf.keras.layers.Layer):
                                                                 dtype=tf.float32)
         super().build(input_shape)
 
-    @property
-    def variables(self):
-        return super().variables + self.layer_norm.variables
-
-    @property
-    def weights(self):
-        return super().weights + self.layer_norm.weights
-
-    @property
-    def trainable_variables(self):
-        if not self.trainable:
-            return []
-        return super().trainable_variables + self.layer_norm.trainable_variables
-
-    @property
-    def trainable_variables(self):
-        if not self.trainable:
-            return []
-        return super().trainable_weights + self.layer_norm.trainable_weights
-
-    def call(self, inputs, token_type_ids=None,
-             dropout_prob=None, **kwargs):
+    def call(self, inputs, token_type_ids=None, dropout_prob=None):
         input_shape = get_shape_list(inputs, expected_rank=3)
         batch_size = input_shape[0]
         seq_length = input_shape[1]
@@ -571,8 +546,8 @@ class EmbeddingPostprocessor(tf.keras.layers.Layer):
 
 class Embeddings(tf.keras.Model):
 
-    def __init__(self, config, **kwargs):
-        super().__init__(config, **kwargs)
+    def __init__(self, config, name=None):
+        super().__init__(name=name)
         self.config = config
         # Perform embedding lookup on the word ids.
         self.embedding_lookup = EmbeddingLookup(
@@ -619,8 +594,8 @@ class Embeddings(tf.keras.Model):
 
 class BertModel(tf.keras.models.Model):
 
-    def __init__(self, config, scope=None, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, config, name=None, trainable=True):
+        super().__init__(name=name, trainable=trainable)
         self.config = config
         config = copy.deepcopy(config)
         self.embedding = Embeddings(config)
@@ -641,10 +616,10 @@ class BertModel(tf.keras.models.Model):
             kernel_initializer=create_initializer(config.initializer_range),
             name="pooler/Dense")
 
-    def call(self, inputs, is_training, input_mask=None, token_type_ids=None, use_one_hot_embeddings=True,
+    def call(self, inputs, training=False, input_mask=None, token_type_ids=None, use_one_hot_embeddings=True,
              hidden_dropout_prob=None,
              attention_probs_dropout_prob=None, pooled=False, get_all_encoder_layers=False):
-        if not is_training:
+        if not training:
             self.config.hidden_dropout_prob = 0.0
             self.config.attention_probs_dropout_prob = 0.0
         input_shape = get_shape_list(inputs, expected_rank=2)
@@ -675,10 +650,10 @@ class BertModel(tf.keras.models.Model):
         else:
             return sequence_output
 
-    def __call__(self, inputs, is_training, input_mask=None, token_type_ids=None, use_one_hot_embeddings=True,
+    def __call__(self, inputs, training=True, input_mask=None, token_type_ids=None, use_one_hot_embeddings=True,
                  hidden_dropout_prob=None,
                  attention_probs_dropout_prob=None, pooled=False, get_all_encoder_layers=False, **kwargs):
-        return super().__call__(inputs=inputs, is_training=is_training, input_mask=input_mask,
+        return super().__call__(inputs=inputs, training=training, input_mask=input_mask,
                                 token_type_ids=token_type_ids,
                                 use_one_hot_embeddings=use_one_hot_embeddings, hidden_dropout_prob=hidden_dropout_prob,
                                 attention_probs_dropout_prob=attention_probs_dropout_prob, pooled=pooled,
