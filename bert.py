@@ -491,13 +491,11 @@ class EmbeddingPostprocessor(tf.keras.layers.Layer):
                                                     initializer=create_initializer(self.initializer_range),
                                                     dtype=tf.float32)
         if self.use_position_embeddings:
-            assert_op = tf.assert_less_equal(input_shape[1].value, self.max_position_embeddings)
-            with tf.control_dependencies([assert_op]):
-                self.full_position_embeddings = self.add_weight(name=self.position_embedding_name,
-                                                                shape=[self.max_position_embedding,
-                                                                       input_shape[2].value],
-                                                                initializer=create_initializer(self.initializer_range),
-                                                                dtype=tf.float32)
+            self.full_position_embeddings = self.add_weight(name=self.position_embedding_name,
+                                                            shape=[self.max_position_embedding,
+                                                                   input_shape[2].value],
+                                                            initializer=create_initializer(self.initializer_range),
+                                                            dtype=tf.float32)
         super().build(input_shape)
 
     def call(self, inputs, token_type_ids=None, dropout_prob=None):
