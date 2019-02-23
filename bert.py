@@ -86,7 +86,7 @@ class LayerNormalization(tf.keras.layers.Layer):
                                      dtype=tf.float32)
         super().build(input_shape)
 
-    def __init__(self, trainable=True, name=None, dtype=None, **kwargs):
+    def __init__(self, trainable=True, name=None):
         super().__init__(name=name, trainable=trainable)
         self.beta = None
         self.gamma = None
@@ -144,15 +144,14 @@ class AttentionLayer(tf.keras.Model):
             num_attention_heads * size_per_head,
             activation=query_act,
             name="query",
-            kernel_initializer=create_initializer(initializer_range),
-            trainbale=trainable)
+            kernel_initializer=create_initializer(initializer_range)
+        )
         # `key_layer` = [B*T, N*H]
         self.key_layer = tf.keras.layers.Dense(
             num_attention_heads * size_per_head,
             activation=key_act,
             name="key",
             kernel_initializer=create_initializer(initializer_range),
-            trainable=trainable
         )
         self.attention_probs_dropout_prob = attention_probs_dropout_prob
         # `value_layer` = [B*T, N*H]
@@ -160,10 +159,11 @@ class AttentionLayer(tf.keras.Model):
             num_attention_heads * size_per_head,
             activation=value_act,
             name="value",
-            kernel_initializer=create_initializer(initializer_range),
-            trainable=trainable)
+            kernel_initializer=create_initializer(initializer_range)
+        )
         self.size_per_head = size_per_head
         self.num_attention_heads = num_attention_heads
+        self.trainable = trainable
 
     def call(self, inputs, attention_probs_dropout_prob=0.0, attention_mask=None, do_return_2d_tensor=False,
              batch_size=None,
@@ -323,14 +323,14 @@ class TransformerModel(tf.keras.Model):
                                             size_per_head=attention_head_size,
                                             initializer_range=initializer_range,
                                             attention_probs_dropout_prob=attention_probs_dropout_prob,
-                                            name=("layer_%d" % layer_idx) + "/attention/self",
-                                            trainable=trainable)
+                                            name=("layer_%d" % layer_idx) + "/attention/self"
+                                            )
             self.attention_layers.append(attention_head)
             dense_layer = tf.keras.layers.Dense(
                 hidden_size,
                 kernel_initializer=create_initializer(initializer_range),
-                name=("layer_%d" % layer_idx) + "/attention/output/Dense",
-                trainable=trainable)
+                name=("layer_%d" % layer_idx) + "/attention/output/Dense"
+            )
             self.attention_dense_layers.append(dense_layer)
             norm_layer = LayerNormalization(name=("layer_%d" % layer_idx) + "/attention/output/LayerNorm")
             self.attention_layer_norms.append(norm_layer)
@@ -338,18 +338,18 @@ class TransformerModel(tf.keras.Model):
                 intermediate_size,
                 activation=intermediate_act_fn,
                 kernel_initializer=create_initializer(initializer_range),
-                name=("layer_%d" % layer_idx) + "/intermediate/Dense",
-                trainable=trainable)
+                name=("layer_%d" % layer_idx) + "/intermediate/Dense"
+            )
             self.intermediate_dense_layers.append(intermediate_dense)
             output_dense_layer = tf.keras.layers.Dense(
                 hidden_size,
                 kernel_initializer=create_initializer(initializer_range),
-                name=("layer_%d" % layer_idx) + "/output/Dense",
-                trainable=trainable)
+                name=("layer_%d" % layer_idx) + "/output/Dense"
+            )
             self.output_dense_layers.append(output_dense_layer)
-            norm_layer = LayerNormalization(name=("layer_%d" % layer_idx) + "/output/LayerNorm",
-                                            trainable=trainable)
+            norm_layer = LayerNormalization(name=("layer_%d" % layer_idx) + "/output/LayerNorm")
             self.output_layer_norms.append(norm_layer)
+        self.trainable = trainable
 
     def call(self, inputs, attention_mask=None, attention_probs_dropout_prob=None, hidden_dropout_prob=None,
              do_return_all_layers=False):
@@ -572,10 +572,11 @@ class Embeddings(tf.keras.Model):
                                                               position_embedding_name="position_embeddings",
                                                               initializer_range=config.initializer_range,
                                                               max_position_embeddings=config.max_position_embeddings,
-                                                              dropout_prob=config.hidden_dropout_prob, name="z",
-                                                              trainable=trainable)
+                                                              dropout_prob=config.hidden_dropout_prob, name="z"
+                                                              )
 
-        self.layer_norm = LayerNormalization(name="LayerNorm", trainable=trainable)
+        self.layer_norm = LayerNormalization(name="LayerNorm")
+        self.trainable = trainable
 
     def call(self, inputs, token_type_ids=None, use_one_hot_embeddings=True, hidden_dropout_prob=None, training=None,
              mask=None):
@@ -617,15 +618,16 @@ class BertModel(tf.keras.models.Model):
                                             hidden_dropout_prob=config.hidden_dropout_prob,
                                             attention_probs_dropout_prob=config.attention_probs_dropout_prob,
                                             initializer_range=config.initializer_range,
-                                            name="encoder",
-                                            trainable=trainable)
+                                            name="encoder"
+                                            )
         # We "pool" the model by simply taking the hidden state corresponding
         # to the first token. We assume that this has been pre-trained
         self.dense_pooler = tf.keras.layers.Dense(
             config.hidden_size,
             activation=tf.tanh,
             kernel_initializer=create_initializer(config.initializer_range),
-            name="pooler/Dense", trainable=trainable)
+            name="pooler/Dense")
+        self.trainable = trainable
 
     def call(self, inputs, training=False, input_mask=None, token_type_ids=None, use_one_hot_embeddings=True,
              hidden_dropout_prob=None,
