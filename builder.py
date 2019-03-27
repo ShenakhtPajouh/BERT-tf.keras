@@ -1,7 +1,6 @@
 import re
 
 import tensorflow as tf
-
 import bert
 import original_bert
 
@@ -139,3 +138,4 @@ def custom_builder(config_path, ckpt_path,
             model_2, assigns = _f()
         _ = session.run(assigns)
     return model_2
+
